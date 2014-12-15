@@ -57,9 +57,24 @@ sub new {
   $menu->append($self->{disconnect_btn});
   $menu->append($quit);
   $menu->show_all();
+  $self->{disconnect_btn}->hide();
   $self->{indic}->set_menu($menu);
   $self->{indic}->set_active(1);
   return $self;
+}
+
+sub set_connected  {
+  my $self = shift;
+  my $connected = shift;
+  if ($connected) {
+    $self->{indic}->set_icon_name_active($self->{connect_icon});
+    $self->{connect_btn}->hide();
+    $self->{disconnect_btn}->show();
+  } else {
+    $self->{indic}->set_icon_name_active($self->{disconnect_icon});
+    $self->{disconnect_btn}->hide();
+    $self->{connect_btn}->show();
+  }
 }
 
 package main;
@@ -205,7 +220,7 @@ if ($no_gui) {
     print "Exiting... Connect failed?\n";
   }
 } else {
-  my $indic = jvpn::Indicator->new();
+  $indicator = jvpn::Indicator->new();
   Gtk2->main();
   exit(0);
 }
@@ -622,7 +637,10 @@ sub ncsvc_connect {
 		"  DNS2: ".inet_ntoa(pack("N",unpack('x[94]N',$data))).
 		"\nConnected to $dhost, press CTRL+C to exit\n";
 	# disabling cursor
-	print "\e[?25l";
+	print "\e[?25l" if $no_gui;
+        if (defined $indicator) {
+          $indicator->set_connected(1);
+        } 
       }
 }
 sub ncsvc_status {
@@ -714,6 +732,9 @@ sub ncsvc_disconnect {
 	    print "delete jvpn.state file\n";
 	    remove("/tmp/jvpn.state");
 	}
+        if (defined $indicator) {
+          $indicator->set_connected(0);
+        } 
 }
 
 # handle ctrl+c to logout and kill ncsvc 
