@@ -134,7 +134,7 @@ if (defined $workdir){
 # check mode
 if(defined $mode){
 	if($mode !~ /^nc(ui|svc)$/) {
-		print "Configuration error: mode is set incorrectly ($mode), check jvpn.ini\n";
+                show_error("Configuration error: mode is set incorrectly ($mode), check jvpn.ini");
 		exit 1;
 	}
 }
@@ -143,7 +143,7 @@ else { $mode="ncsvc"; }
 # check password method
 if(defined $cfgpass){
 	if($cfgpass !~ /^(interactive|interactive-secondary|helper:|plaintext:)/) {
-		print "Configuration error: password is set incorrectly ($cfgpass), check jvpn.ini\n";
+		show_error("Configuration error: password is set incorrectly ($cfgpass), check jvpn.ini");
 		exit 1;
 	}
 }
@@ -161,13 +161,13 @@ if (-e "./ncsvc") {
 	my $fmode = (stat("./ncsvc"))[2];
 	$is_setuid = ($fmode & S_ISUID) && ((stat("./ncsvc"))[4] == 0);
 	if(!-x "./ncsvc"){
-		print "./ncsvc is not executable, exiting\n"; 
+		show_error("./ncsvc is not executable, exiting"); 
 		exit 1;
 	}
 }
 
 if( $> != 0 && !$is_setuid) {
-	print "Please, run this script with su/sudo or set suid attribute on $mode \n";
+	show_error("Please, run this script with su/sudo or set suid attribute on $mode");
 	exit 1;
 }
 
@@ -349,8 +349,9 @@ sub ncsvc_connect {
 		$response_body=$res->decoded_content;
 	}
 	if ( $response_body =~ /Invalid username or password/){
-		print "Invalid user name or password, exiting \n";
-		exit 1;
+		show_error("Invalid user name or password");
+		exit 1 if $no_gui;
+                return;
 	}
 	# hostchecker authorization stage
 	if($hostchecker) {
@@ -358,7 +359,7 @@ sub ncsvc_connect {
 			print "tncc.jar does not exist, downloading from https://$dhost:$dport/dana-cached/hc/tncc.jar\n";
 			my $resdl = $ua->get ("https://$dhost:$dport/dana-cached/hc/tncc.jar",":content_file" => "./tncc.jar");
 			if (!$resdl->is_success) {
-				print "Unable to download tncc.jar, exiting \n";
+				show_error("Unable to download tncc.jar, exiting");
 				exit 1;
 			}
 		}
@@ -369,7 +370,7 @@ sub ncsvc_connect {
 			$state_id=$1;
 		}
 		else {
-			print "Unable to get preauth id from ".$res->base."\n";
+		        show_error("Unable to get preauth id from ".$res->base);
 			exit 1;
 		} # now we got preauth, so lets try to start tncc
 		$tncc_pid = tncc_start($res->decoded_content);
@@ -392,15 +393,16 @@ sub ncsvc_connect {
 		$narsocket->recv($data,2048);
 		$narsocket->close();
 		if(!length($data)) {
-			print "\nUnable to get data from tncc, exiting";
+			show_error("\nUnable to get data from tncc, exiting");
 			exit 1;
 		}
 		hdump($data) if $debug;
 		my @resp_lines = split /\n/, $data;
 
 		if($resp_lines[0]!=200) {
-			print "\nGot non 200 (".$resp_lines[0].") return code\n";
-			exit 1;
+		        show_error("\nGot non 200 (".$resp_lines[0].") return code");
+			exit 1 if ! $no_gui;
+                        return;
 		}
 		print "[done]\n";
 		$ua->cookie_jar->set_cookie(0,"DSPREAUTH",$resp_lines[2],"/dana-na/",$dhost,$dport,1,1,60*5,0, ());
@@ -450,14 +452,16 @@ sub ncsvc_connect {
 	# do not print DSID in normal mode for security reasons
 	print $debug?"Got DSID=$dsid, dfirst=$dfirst, dlast=$dlast\n":"Got DSID\n";
 	if ($dsid eq "") {
-		print "Unable to get DSID, exiting \n";
-		exit 1;
+		show_error("Unable to get DSID");
+		exit 1 if $no_gui;
+                return;
 	}
 	
       } else {
 	# Error code, type of error, error message
-	print("An error happened: ".$res->status_line."\n");
-	exit 1;
+	show_error("An error happened: ".$res->status_line."\n");
+	exit 1 if $no_gui;
+        return;
       }
 
   if($mode eq "ncsvc") {
@@ -503,7 +507,7 @@ sub ncsvc_connect {
 			printf "Trying to compile 'ncui'. gcc must be installed to make this possible\n";
 			system("gcc -m32 -o ncui wrapper.c -ldl  -Wall >compile.log 2>&1 && chmod +x ./ncui");
 			if (!-e "./ncui") {
-				printf("Error: Compilation failed, please compile.log\n");
+				show_error("Error: Compilation failed, please compile.log");
 				exit 1;
 			}
 			else {
@@ -512,7 +516,7 @@ sub ncsvc_connect {
 		}
 	}
 	else {
-		print "Download failed, exiting\n";
+		show_error("Download failed, exiting");
 		exit 1;
 	}
    }
@@ -576,9 +580,9 @@ sub ncsvc_connect {
 	# exit on any other values
 	
 	if($status ne "6d") {
-		printf("Status=$status\nAuthentication failed, exiting\n");
+		show_error("Status=$status\nAuthentication failed.\n");
 		system("./ncsvc -K");
-		exit(1);
+		exit(1) if $no_gui;
 	}
 	if($> == 0 && $dnsprotect) {
 		system("chattr +i /etc/resolv.conf");
@@ -848,7 +852,7 @@ sub tncc_start {
 		last if $? == 0;
 	}
 	if($found eq ""){
-		print "Unable to find correct start class in the tncc.jar, please report problem to developer\n";
+	        show_error("Unable to find correct start class in the tncc.jar, please report problem to developer");
 		exit 1;
 	}
 	my $pid = fork();
@@ -957,8 +961,25 @@ sub read_input {
     if ($status eq 'ok') {
       $value = $entry->get_text();
     }
+    $dialog->destroy();
   }
   return $value;
+}
+
+sub show_error {
+  my $message = shift;
+
+  if ($no_gui) {
+    print "$message\n";
+  } else {
+    my $dialog = Gtk2::Dialog->new("Error" , undef, 'modal',
+                                   'gtk-ok' => 'ok');
+    $dialog->set_default_response('ok');
+    $dialog->get_content_area()->pack_start(Gtk2::Label->new($message), 1, 0, 2);
+    $dialog->show_all();
+    my $status = $dialog->run();
+    $dialog->destroy();
+  }
 }
 
 sub print_help {
