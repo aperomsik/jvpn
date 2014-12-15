@@ -34,11 +34,42 @@ use Gtk2::Pango;
 use Gtk2::AppIndicator;
 
 
+package jvpn::Indicator;
+use FindBin qw($Bin);
+
+sub new {
+  my $class = shift;
+  my $self = {};
+  bless ($self, $class);
+
+  $self->{disconnect_icon} = "$Bin/nc-grey-disc.png";
+  $self->{connect_icon} = "$Bin/nc-grey.png";
+
+  $self->{indic} = Gtk2::AppIndicator->new("MSJNC",$self->{disconnect_icon},'communications');
+  my $menu=Gtk2::Menu->new();
+  $self->{connect_btn} = Gtk2::MenuItem->new_with_mnemonic("_Connect");
+  $self->{disconnect_btn} = Gtk2::MenuItem->new_with_mnemonic("_Disconnect");
+  my $quit=Gtk2::MenuItem->new_with_mnemonic("_Quit");
+  $quit->signal_connect("activate",sub { Gtk2->main_quit(); } );
+  $self->{connect_btn}->signal_connect("activate", \&main::ncsvc_connect );
+  $self->{disconnect_btn}->signal_connect("activate", \&main::ncsvc_disconnect );
+  $menu->append($self->{connect_btn});
+  $menu->append($self->{disconnect_btn});
+  $menu->append($quit);
+  $menu->show_all();
+  $self->{indic}->set_menu($menu);
+  $self->{indic}->set_active(1);
+  return $self;
+}
+
+package main;
+
 my %Config;
 my @config_files = ("./jvpn.ini", $ENV{'HOME'}."/.jvpn.ini", "/etc/jvpn/jvpn.ini");
 my $config_file = '';
 my $show_help = 0;
-my $no_gui = 1;
+my $no_gui = 0;
+my $indicator = undef;
 
 # find configuration file
 foreach my $line (@config_files) {
@@ -173,8 +204,11 @@ if ($no_gui) {
     }
     print "Exiting... Connect failed?\n";
   }
+} else {
+  my $indic = jvpn::Indicator->new();
+  Gtk2->main();
+  exit(0);
 }
-
 
 sub ncsvc_connect {
   if (!defined($username) || $username eq "" || $username eq "interactive") {
@@ -637,14 +671,7 @@ sub hdump {
 	}
 }
 
-# handle ctrl+c to logout and kill ncsvc 
-sub INT_handler {
-	# de-register handlers
-	$SIG{'INT'} = 'DEFAULT';
-	$SIG{'TERM'} = 'DEFAULT';
-	$SIG{'HUP'} = 'DEFAULT';
-	# re-enabling cursor
-	print "\e[?25h";
+sub ncsvc_disconnect {
 	if($> == 0 && $dnsprotect) {
 		system("chattr -i /etc/resolv.conf");
 	}
@@ -687,6 +714,17 @@ sub INT_handler {
 	    print "delete jvpn.state file\n";
 	    remove("/tmp/jvpn.state");
 	}
+}
+
+# handle ctrl+c to logout and kill ncsvc 
+sub INT_handler {
+	# de-register handlers
+	$SIG{'INT'} = 'DEFAULT';
+	$SIG{'TERM'} = 'DEFAULT';
+	$SIG{'HUP'} = 'DEFAULT';
+	# re-enabling cursor
+	print "\e[?25h";
+        ncsvc_disconnect();
 	print "Exiting\n";
 	exit(0);
 }
