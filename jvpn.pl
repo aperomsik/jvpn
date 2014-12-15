@@ -229,13 +229,9 @@ sub enter_passwords {
   my $password2;
   
   if ($no_gui) {
-    print "Enter PIN+password: ";
-    $password=read_input("password");
-    print "\n";
+    $password=read_input(1, "Enter PIN+password: ");
     if ($cfgpass eq "interactive-secondary") {
-      print "Enter password#2: ";
-      $password2=read_input("password");
-      print "\n";
+      $password2=read_input(1, "Enter password#2: ");
     }
  } else {
     my $dialog = Gtk2::Dialog->new("$dhost credentials" , undef, 'modal',
@@ -277,9 +273,7 @@ sub enter_passwords {
 
 sub ncsvc_connect {
   if (!defined($username) || $username eq "" || $username eq "interactive") {
-	print "Enter username: ";
-	$username=read_input();
-	print "\n";
+	$username=read_input(0, "Enter username: ");
   }
 
   if (!$with_passwords) {
@@ -902,15 +896,10 @@ sub retry_port {
 	die "Error connecting to 127.0.0.1:$port : $!";
 }
 
-sub read_input {
-	my $param = shift;
-	my $is_passwd = 0;
+sub tty_read_input {
+	my $is_passwd = shift;
 	my $input = "";
 	my $pkey="";
-	# Print '*' instead of the real characters when "password" is provided as argument
-	if (defined $param && $param eq "password") {
-		$is_passwd = 1;
-	}
 	# Start reading the keys
 	ReadMode(4); # Disable the control keys
 	while(ord($pkey = ReadKey(0)) != 10)
@@ -938,6 +927,38 @@ sub read_input {
 	}
 	ReadMode(0); # Reset the terminal once we are done
 	return $input;
+}
+
+sub read_input {
+  my $is_passwd = shift;
+  my $prompt = shift;
+  my $value;
+  # Print '*' instead of the real characters when "password" is provided as argument
+  if ($no_gui) {
+    print $prompt;
+    $value = tty_read_input($is_passwd);
+    print "\n";
+  } else {
+    my $dialog = Gtk2::Dialog->new("$dhost credentials" , undef, 'modal',
+                                   'gtk-cancel' => 'cancel',
+                                   'gtk-ok' => 'ok');
+    $dialog->set_default_response('ok');
+    $dialog->get_content_area()->pack_start(Gtk2::Label->new($prompt), 1, 0, 2);
+    my $entry = Gtk2::Entry->new();
+    if ($is_passwd) {
+      $entry->set_visibility(0);
+      $entry->set_invisible_char('*');
+    }
+    $entry->set_width_chars(25);
+    $entry->signal_connect(activate => sub { $dialog->response('ok') });
+    $dialog->get_content_area()->pack_start($entry, 1, 0, 2);
+    $dialog->show_all();
+    my $status = $dialog->run();
+    if ($status eq 'ok') {
+      $value = $entry->get_text();
+    }
+  }
+  return $value;
 }
 
 sub print_help {
