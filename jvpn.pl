@@ -26,10 +26,20 @@ use File::Temp;
 use File::Path;
 use POSIX;
 
+# UI and indicator
+use Glib;
+use Gtk2 -init;
+use Gtk2::SimpleMenu;
+use Gtk2::Pango;
+use Gtk2::AppIndicator;
+
+
 my %Config;
 my @config_files = ("./jvpn.ini", $ENV{'HOME'}."/.jvpn.ini", "/etc/jvpn/jvpn.ini");
 my $config_file = '';
 my $show_help = 0;
+my $no_gui = 1;
+
 # find configuration file
 foreach my $line (@config_files) {
 	$config_file=$line;
@@ -37,7 +47,8 @@ foreach my $line (@config_files) {
 }
 # override from command line if specified
 GetOptions ("config_file=s" => \$config_file,
-	"help" => \$show_help);
+	"help" => \$show_help,
+        "nw" => \$no_gui );
 
 if($show_help) { print_help(); }
 # parse configuration
@@ -63,6 +74,10 @@ my $with_passwords=(defined($password)) && (defined($password2));
 
 my $supportdir = $ENV{"HOME"}."/.juniper_networks";
 my $narport_file = $supportdir."/narport.txt";
+
+if (! defined $workdir) {
+  $workdir = $supportdir."/network_connect";
+}
 
 # change directory
 if (defined $workdir){
@@ -134,13 +149,41 @@ if($debug){
     $ua->add_handler("response_done", sub { shift->dump; return });
 }
 
-if (!defined($username) || $username eq "" || $username eq "interactive") {
+# set int handlers
+$SIG{'INT'}  = \&INT_handler; # CTRL+C
+$SIG{'TERM'} = \&INT_handler; # Kill process
+$SIG{'HUP'} = \&INT_handler; # Terminal closed
+$SIG{'PIPE'} = \&INT_handler; # Process died
+
+# flush after every write
+$| = 1;
+
+my $md5hash = '';
+my $crtfile = ''; 
+my $fh; # should be global or file is unlinked
+my $start_t;
+my ($socket,$client_socket);
+
+if ($no_gui) {
+  ncsvc_connect();
+  if($mode eq "ncsvc") {
+    while (defined $socket) {
+      ncsvc_status();
+      sleep 1;
+    }
+    print "Exiting... Connect failed?\n";
+  }
+}
+
+
+sub ncsvc_connect {
+  if (!defined($username) || $username eq "" || $username eq "interactive") {
 	print "Enter username: ";
 	$username=read_input();
 	print "\n";
-}
+  }
 
-if (!$with_passwords) {
+  if (!$with_passwords) {
     if ($cfgpass eq "interactive") {
 	print "Enter PIN+password: ";
 	$password=read_input("password");
@@ -163,11 +206,11 @@ if (!$with_passwords) {
 	print "Using user-defined script to get the password\n";
 	$password=run_pw_helper($1);
     }
-}
+  }
 
-my $response_body = '';
+  my $response_body = '';
 
-my $res = $ua->post("https://$dhost:$dport/dana-na/auth/$durl/login.cgi",
+  my $res = $ua->post("https://$dhost:$dport/dana-na/auth/$durl/login.cgi",
 	[ btnSubmit   => 'Sign In',
 	password  => $password,
 	'password#2'  => $password2,
@@ -176,13 +219,13 @@ my $res = $ua->post("https://$dhost:$dport/dana-na/auth/$durl/login.cgi",
 	username  => $username,
 	]);
 
-$response_body=$res->decoded_content;
-my $dsid="";
-my $dlast="";
-my $dfirst="";
+  $response_body=$res->decoded_content;
+  my $dsid="";
+  my $dlast="";
+  my $dfirst="";
 
-# Looking at the results...
-if ($res->is_success) {
+  # Looking at the results...
+  if ($res->is_success) {
 	print("Transfer went ok\n");
 	# next token request
 	if ($response_body =~ /name="frmDefender"/ || $response_body =~ /name="frmNextToken"/) {
@@ -328,26 +371,13 @@ if ($res->is_success) {
 		exit 1;
 	}
 	
-} else {
+      } else {
 	# Error code, type of error, error message
 	print("An error happened: ".$res->status_line."\n");
 	exit 1;
-}
+      }
 
-# set int handlers
-$SIG{'INT'}  = \&INT_handler; # CTRL+C
-$SIG{'TERM'} = \&INT_handler; # Kill process
-$SIG{'HUP'} = \&INT_handler; # Terminal closed
-$SIG{'PIPE'} = \&INT_handler; # Process died
-
-# flush after every write
-$| = 1;
-
-my $md5hash = '';
-my $crtfile = ''; 
-my $fh; # should be global or file is unlinked
-
-if($mode eq "ncsvc") {
+  if($mode eq "ncsvc") {
 	$md5hash = <<`	SHELL`;
 	echo | openssl s_client -connect ${dhost}:${dport} 2>/dev/null| \
 	openssl x509 -md5 -noout -fingerprint|\
@@ -362,8 +392,8 @@ if($mode eq "ncsvc") {
 		exit 1;
 	}
 	print "Certificate fingerprint:  [$md5hash]\n";
-}
-elsif($mode eq "ncui") {
+  }
+  elsif($mode eq "ncui") {
 	# we need to fetch certificate
 	$fh = File::Temp->new();
 	$crtfile = $fh->filename;
@@ -373,9 +403,9 @@ elsif($mode eq "ncui") {
 	openssl x509 -outform der > $crtfile
 	SHELL
 	printf("Saved certificate to temporary file: $crtfile\n");
-}
+  }
 
-if (!-e "./$mode") {
+  if (!-e "./$mode") {
 	$res = $ua->get ("https://$dhost:$dport/dana-cached/nc/ncLinuxApp.jar",':content_file' => './ncLinuxApp.jar');
 	print "Client not exists, downloading from https://$dhost:$dport/dana-cached/nc/ncLinuxApp.jar\n";
 	if ($res->is_success) {
@@ -402,14 +432,12 @@ if (!-e "./$mode") {
 		print "Download failed, exiting\n";
 		exit 1;
 	}
-}
+   }
 
 
-my $start_t = time;
-
-my ($socket,$client_socket);
-my $data;
-if($mode eq "ncsvc") {
+  $start_t = time;
+  my $data;
+  if($mode eq "ncsvc") {
 	system("./ncsvc >/dev/null 2>/dev/null &");
 	# connecting to ncsvc using TCP
 	$socket = retry_port(4242);
@@ -472,11 +500,10 @@ if($mode eq "ncsvc") {
 	if($> == 0 && $dnsprotect) {
 		system("chattr +i /etc/resolv.conf");
 	}
+      } # ncsvc
 
-} # ncsvc
 
-
-if ($mode eq "ncui"){
+  if ($mode eq "ncui"){
 	print "Starting ncui, this should bring VPN up.\nPress CTRL+C anytime to terminate connection\n";
 	my $childpid;
 	local $SIG{'CHLD'} = 'IGNORE';
@@ -535,9 +562,9 @@ if ($mode eq "ncui"){
 	    }
 	    sleep 2;
 	}
-}
+      }
 
-if($mode eq "ncsvc") {
+  if($mode eq "ncsvc") {
 	# information query
 	$data =  "\0\0\0\0\0\0\0\x6a\x01\0\0\0\x01\0\0\0\0\0\0\0";
 	hdump($data) if $debug;
@@ -562,33 +589,30 @@ if($mode eq "ncsvc") {
 		"\nConnected to $dhost, press CTRL+C to exit\n";
 	# disabling cursor
 	print "\e[?25l";
-	while ( 1 ) {
-		#stat query
-		$data="\0\0\0\0\0\0\0\x69\x01\0\0\0\x01\0\0\0\0\0\0\0";
-		print "\r                                                              \r";
-		hdump($data) if $debug;
-		print $socket "$data";
-		$socket->recv($data,2048);
-		if(!length($data) || !$socket->connected()) {
-		    print "No response from ncsvc, closing connection\n";
-		    INT_handler();
-		}
-		hdump($data) if $debug;
-		my $now = time - $start_t;
-		# printing RX/TX. This packet also contains encription type,
-		# compression and transport info, but length seems to be variable
-		my $status = sprintf("Duration: %02d:%02d:%02d  Sent: %s\tReceived: %s", 
-			int($now / 3600), int(($now % 3600) / 60), int($now % 60),
-			format_bytes(unpack('x[78]N',$data)), format_bytes(unpack('x[68]N',$data)));
-                print $status;
-                write_status($status);
-		sleep(1);
-	}
+      }
+}
+sub ncsvc_status {
+  #stat query
+  my $data="\0\0\0\0\0\0\0\x69\x01\0\0\0\x01\0\0\0\0\0\0\0";
+  print "\r                                                              \r";
+  hdump($data) if $debug;
+  print $socket "$data";
+  $socket->recv($data,2048);
+  if(!length($data) || !$socket->connected()) {
+    print "No response from ncsvc, closing connection\n";
+    INT_handler();
+  }
+  hdump($data) if $debug;
+  my $now = time - $start_t;
+  # printing RX/TX. This packet also contains encription type,
+  # compression and transport info, but length seems to be variable
+  my $status = sprintf("Duration: %02d:%02d:%02d  Sent: %s\tReceived: %s", 
+                       int($now / 3600), int(($now % 3600) / 60), int($now % 60),
+                       format_bytes(unpack('x[78]N',$data)), format_bytes(unpack('x[68]N',$data)));
+  print $status;
+  write_status($status);
+}
 
-	print "Exiting... Connect failed?\n";
-	
-	$socket->close();
-} # mode ncsvc loop
 
 # for debugging
 sub hdump {
@@ -627,7 +651,7 @@ sub INT_handler {
 	if($mode eq "ncsvc" && $socket->connected()){
 		print "\nSending disconnect packet\n";
 		# disconnect packet
-		$data="\0\0\0\0\0\0\0\x67\x01\0\0\0\x01\0\0\0\0\0\0\0";
+		my $data="\0\0\0\0\0\0\0\x67\x01\0\0\0\x01\0\0\0\0\0\0\0";
 		hdump($data) if $debug;
 		print $socket "$data";
 		$socket->recv($data,2048);
