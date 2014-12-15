@@ -222,7 +222,57 @@ if ($no_gui) {
 } else {
   $indicator = jvpn::Indicator->new();
   Gtk2->main();
-  exit(0);
+}
+
+sub enter_passwords {
+  my $password;
+  my $password2;
+  
+  if ($no_gui) {
+    print "Enter PIN+password: ";
+    $password=read_input("password");
+    print "\n";
+    if ($cfgpass eq "interactive-secondary") {
+      print "Enter password#2: ";
+      $password2=read_input("password");
+      print "\n";
+    }
+ } else {
+    my $dialog = Gtk2::Dialog->new("$dhost credentials" , undef, 'modal',
+                                   'gtk-cancel' => 'cancel',
+                                   'gtk-ok' => 'ok');
+    $dialog->set_default_response('ok');
+    $dialog->get_content_area()->pack_start(Gtk2::Label->new("Password for $username @ $dhost:"), 1, 0, 2);
+
+    # This is the entry box for the password
+    my $entry = Gtk2::Entry->new();
+    $entry->set_visibility(0);
+    $entry->set_invisible_char('*');
+    $entry->set_width_chars(25);
+    $entry->signal_connect(activate => sub { $dialog->response('ok') });
+    $dialog->get_content_area()->pack_start($entry, 1, 0, 2);
+
+    my $entry2;
+    if ($cfgpass eq "interactive-secondary") {
+      $dialog->get_content_area()->pack_start(Gtk2::Label->new("Password2:"), 1, 0, 2);
+      $entry2 = Gtk2::Entry->new();
+      $entry2->set_visibility(0);
+      $entry2->set_invisible_char('*');
+      $entry2->set_width_chars(25);
+      $entry2->signal_connect(activate => sub { $dialog->response('ok') });
+      $dialog->get_content_area()->pack_start($entry2, 1, 0, 2);
+    }
+
+    # Run it
+    $dialog->show_all();
+    my $status = $dialog->run();
+    if ($status eq 'ok') {
+      $password = $entry->get_text();
+      $password2 = $entry2->get_text();
+    }
+    $dialog->destroy();
+ }
+ return ($password, $password2);
 }
 
 sub ncsvc_connect {
@@ -233,18 +283,8 @@ sub ncsvc_connect {
   }
 
   if (!$with_passwords) {
-    if ($cfgpass eq "interactive") {
-	print "Enter PIN+password: ";
-	$password=read_input("password");
-	print "\n";
-    }
-    elsif ($cfgpass eq "interactive-secondary") {
-	print "Enter password: ";
-	$password=read_input("password");
-	print "\n";
-	print "Enter password#2: ";
-	$password2=read_input("password");
-	print "\n";
+    if ($cfgpass eq "interactive" || $cfgpass eq "interactive-secondary") {
+        ($password, $password2) = enter_passwords();
     }
     elsif ($cfgpass =~ /^plaintext:(.+)/) {
 	print "Using user-defined password\n";
