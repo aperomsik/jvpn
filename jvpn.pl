@@ -133,7 +133,7 @@ if (defined $workdir){
 
 # check mode
 if(defined $mode){
-	if($mode !~ /^nc(ui|svc)$/) {
+	if($mode !~ /^nc(ui|svc)$/ && $mode !~ /openconnect/) {
                 show_error("Configuration error: mode is set incorrectly ($mode), check jvpn.ini");
 		exit 1;
 	}
@@ -154,21 +154,65 @@ $hostchecker=0 if !defined($mode);
 # set default url if needed
 $durl = "url_default" if (!defined($durl));
 
-# checking if we running under root
-# we need ncsvc to be uid for all modes
-my $is_setuid = 0;
-if (-e "./ncsvc") {
-	my $fmode = (stat("./ncsvc"))[2];
-	$is_setuid = ($fmode & S_ISUID) && ((stat("./ncsvc"))[4] == 0);
-	if(!-x "./ncsvc"){
-		show_error("./ncsvc is not executable, exiting"); 
-		exit 1;
-	}
+# Checking if we running under root
+
+if ($mode eq "openconnect") {
+  # make suid wrapper
+  if (! -r "./nc_open_conn") {
+    open SCRIPT, ">nc_open_conn.c";
+    print SCRIPT <<'END';
+#include <stdio.h>
+#include <unistd.h>
+#include <stdlib.h>
+
+void main (int argc, char *argv[]) 
+{
+  setuid(0);
+  if (argc > 2)  
+   {
+    printf("cookie via arg: %s\n", argv[2]);
+    execl("/usr/sbin/openconnect", "openconnect", /* "--dump-http-traffic", */ 
+          "--juniper", "-C", argv[2], 
+          argv[1], (char*) NULL);
+   }
+  else if (argc > 1) 
+   {
+    printf("using cookie via stdin\n");
+    execl("/usr/sbin/openconnect", "openconnect", "--juniper", "--cookie-on-stdin", 
+          /* "--dump-http-traffic", */
+          argv[1], (char*) NULL);
+   }
 }
 
-if( $> != 0 && !$is_setuid) {
-	show_error("Please, run this script with su/sudo or set suid attribute on $mode");
-	exit 1;
+END
+    close SCRIPT;
+    system("gcc -o nc_open_conn -ldl -Wall nc_open_conn.c");
+    open SCRIPT2, ">set_perms";
+    print SCRIPT2 <<END2;
+#!/bin/sh -f
+chown root:root $workdir/nc_open_conn
+chmod +s $workdir/nc_open_conn
+chmod +x $workdir/nc_open_conn
+END2
+    close SCRIPT2;
+    system("pkexec /bin/sh -f $workdir/set_perms");
+  }
+} else {
+  # we need ncsvc to be uid for all other modes
+  my $is_setuid = 0;
+  if (-e "./ncsvc") {
+    my $fmode = (stat("./ncsvc"))[2];
+    $is_setuid = ($fmode & S_ISUID) && ((stat("./ncsvc"))[4] == 0);
+    if(!-x "./ncsvc"){
+      show_error("./ncsvc is not executable, exiting"); 
+      exit 1;
+    }
+  }
+
+  if( $> != 0 && !$is_setuid) {
+    show_error("Please, run this script with su/sudo or set suid attribute on $mode");
+    exit 1;
+  }
 }
 
 my $ua = LWP::UserAgent->new;
@@ -492,7 +536,7 @@ sub ncsvc_connect {
 	printf("Saved certificate to temporary file: $crtfile\n");
   }
 
-  if (!-e "./$mode") {
+  if ($mode =~ /^nc/ && !-e "./$mode") {
 	$res = $ua->get ("https://$dhost:$dport/dana-cached/nc/ncLinuxApp.jar",':content_file' => './ncLinuxApp.jar');
 	print "Client not exists, downloading from https://$dhost:$dport/dana-cached/nc/ncLinuxApp.jar\n";
 	if ($res->is_success) {
@@ -651,6 +695,28 @@ sub ncsvc_connect {
 	}
       }
 
+  if ($mode eq "openconnect") {
+
+	# this didn't work for me due to multi-stage auth
+	#  nmcli con add type vpn \
+	#  	con-name "My Juniper VPN" \
+	#  	ifname "*" \
+	#  	vpn-type openconnect \
+	#  	-- \
+	#  	vpn.data "gateway=vpn.example.com,protocol=nc"
+      
+      # should use a setuid wrapper script for openconnect
+      # should fork, return pid, something like that
+    if (0) {
+      system("sudo openconnect --dump-http-traffic --juniper -C \"DSID=$dsid\" $dhost");
+    } else {
+      open LAUNCH, "|./nc_open_conn $dhost";
+      print LAUNCH "DSID=$dsid\n";
+      close LAUNCH;
+      # system("./nc_open_conn $dhost DSID=$dsid");
+    }
+  }
+  
   if($mode eq "ncsvc") {
 	# information query
 	$data =  "\0\0\0\0\0\0\0\x6a\x01\0\0\0\x01\0\0\0\0\0\0\0";
@@ -745,15 +811,17 @@ sub ncsvc_disconnect {
 	print "Logging out...\n";
 	# do logout
 	$ua -> get ("https://$dhost:$dport/dana-na/auth/logout.cgi");
-	print "Killing ncsvc...\n";
-	# it is suid, so best is to use own api
-	system("./ncsvc -K");
-
-	# checking if resolv.conf correctly restored
-	if(-f "/etc/jnpr-nc-resolv.conf"){
-	    print "restoring resolv.conf\n";
-	    move("/etc/jnpr-nc-resolv.conf","/etc/resolv.conf");
-	}
+        if ($mode !~ /openconnect/) {
+            print "Killing ncsvc...\n";
+            # it is suid, so best is to use own api
+            system("./ncsvc -K");
+            
+            # checking if resolv.conf correctly restored
+            if(-f "/etc/jnpr-nc-resolv.conf"){
+                print "restoring resolv.conf\n";
+                move("/etc/jnpr-nc-resolv.conf","/etc/resolv.conf");
+            }
+        }
 	# hostchecker cleanup
 	if($hostchecker) {
 		print "Killing tncc.jar...\n";
