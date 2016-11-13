@@ -26,6 +26,7 @@ use File::Temp;
 use File::Path;
 use POSIX;
 use IPC::Open2;
+use Fcntl;
 
 # UI and indicator
 use Glib;
@@ -237,7 +238,11 @@ if ($hostchecker) {
     $ua->cookie_jar->set_cookie(0,"DSCheckBrowser","java","/",$dhost,$dport,1,1,60*5,0, ());
 }
 else {
+  if ($mode eq "openconnect") {
+    $ua->agent('JVPN+OpenConnect/Linux');
+  } else {
     $ua->agent('JVPN/Linux');
+  }
 }
 # show LWP traffic dump if debug is enabled
 if($debug){
@@ -716,36 +721,20 @@ sub ncsvc_connect {
         #
         #  with a patch for network-manager-openconnect and adding juniper_mode=1 to vpn.data
         #  it did work, but DNS is not right.
-      
-      # should fork, return pid, something like that
-    if (0) {
-      system("sudo openconnect --dump-http-traffic --juniper -C \"DSID=$dsid\" $dhost");
-    } else {
 
-      $openconnect = open2($oc_out, $oc_in, "./nc_open_conn", "$dhost");
-      # sleep(1);
-      print $oc_in "DSID=$dsid\n";
-      print OC_LOG "openconnect pid $openconnect\n";
+    $openconnect = open2($oc_out, $oc_in, "./nc_open_conn", "$dhost");
+    print $oc_in "DSID=$dsid\n";
+    print OC_LOG "openconnect pid $openconnect\n";
+    
+    my $flags;
+    # fcntl($oc_out, F_GETFL, $flags);
+    # $flags |= O_NONBLOCK;
+    # fnctl($oc_out, F_SETFL, $flags);
 
-      while (1) {
-        my $a = <$oc_out>;
-        if (defined $a) {
-          print OC_LOG $a;
-          if ($a =~ /^ESP session established with server/ ||
-              $a =~ /Connected as \d+.\d+.\d+.\d+, using SSL/) {
-            if (defined $indicator) {
-              $indicator->set_connected(1);
-            }
-            return;
-          }
-        }
-      }
-      # open LAUNCH, "|./nc_open_conn $dhost";
-      # print LAUNCH "DSID=$dsid\n";
-      # close LAUNCH;
-      # system("./nc_open_conn $dhost DSID=$dsid");
-    }
+    print OC_LOG "openconnect pid $openconnect\n";
+    Glib::Timeout->add(1000, \&check_openconnect_status);
   }
+    
   
   if($mode eq "ncsvc") {
 	# information query
@@ -774,9 +763,40 @@ sub ncsvc_connect {
 	print "\e[?25l" if $no_gui;
         if (defined $indicator) {
           $indicator->set_connected(1);
-        } 
+        }
       }
 }
+
+
+# from http://www.perlmonks.org/?node_id=713384
+# An non-blocking filehandle read that returns an array of lines read
+# Returns:  ($eof,@lines)
+my %nonblockGetLines_last;
+sub nonblockGetLines {
+  my ($fh,$timeout) = @_;
+
+  $timeout = 0 unless defined $timeout;
+  my $rfd = '';
+  $nonblockGetLines_last{$fh} = ''
+        unless defined $nonblockGetLines_last{$fh};
+
+  vec($rfd,fileno($fh),1) = 1;
+  return unless select($rfd, undef, undef, $timeout)>=0;
+    # I'm not sure the following is necessary?
+  return unless vec($rfd,fileno($fh),1);
+  my $buf = '';
+  my $n = sysread($fh,$buf,1024*1024);
+  # If we're done, make sure to send the last unfinished line
+  return (1,$nonblockGetLines_last{$fh}) unless $n;
+    # Prepend the last unfinished line
+  $buf = $nonblockGetLines_last{$fh}.$buf;
+    # And save any newly unfinished lines
+  $nonblockGetLines_last{$fh} =
+        (substr($buf,-1) !~ /[\r\n]/ && $buf =~ s/([^\r\n]*)$//)
+            ? $1 : '';
+  $buf ? (0,split(/\n/,$buf)) : (0);
+}
+
 sub ncsvc_status {
   #stat query
   my $data="\0\0\0\0\0\0\0\x69\x01\0\0\0\x01\0\0\0\0\0\0\0";
@@ -799,6 +819,30 @@ sub ncsvc_status {
   write_status($status);
 }
 
+sub check_openconnect_status {
+
+  if (! defined $openconnect) {
+    print OC_LOG "openconnect not running\n";
+    0;
+  }
+
+  print OC_LOG "check_openconnect_status\n";
+
+  my ($eof, @lines) = nonblockGetLines($oc_out);
+  
+  print scalar (@lines) . " lines\n";
+  
+  foreach (@lines) {
+    print OC_LOG $_;
+    if (/^ESP session established with server/ ||
+        /^Connected as \d+.\d+.\d+.\d+, using SSL/) {
+      if (defined $indicator) {
+        $indicator->set_connected(1);
+      }
+    }
+  }  
+  1;
+}
 
 # for debugging
 sub hdump {
