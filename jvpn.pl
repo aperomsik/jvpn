@@ -39,6 +39,8 @@ use Gtk2::AppIndicator;
 package jvpn::Indicator;
 use FindBin qw($Bin);
 
+my $mode;
+
 sub new {
   my $class = shift;
   my $self = {};
@@ -68,6 +70,9 @@ sub new {
 sub set_connected  {
   my $self = shift;
   my $connected = shift;
+  if ($mode eq "openconnect") {
+    print main::OC_LOG "set_connected $connected\n";
+  }
   if ($connected) {
     $self->{indic}->set_icon_name_active($self->{connect_icon});
     $self->{connect_btn}->hide();
@@ -110,7 +115,7 @@ my $realm=$Config{"realm"};
 my $dnsprotect=$Config{"dnsprotect"};
 my $debug=$Config{"debug"};
 my $verifycert=$Config{"verifycert"};
-my $mode=$Config{"mode"};
+$mode=$Config{"mode"};
 my $script=$Config{"script"};
 my $cfgpass=$Config{"password"};
 my $workdir=$Config{"workdir"};
@@ -725,13 +730,6 @@ sub ncsvc_connect {
     $openconnect = open2($oc_out, $oc_in, "./nc_open_conn", "$dhost");
     print $oc_in "DSID=$dsid\n";
     print OC_LOG "openconnect pid $openconnect\n";
-    
-    my $flags;
-    # fcntl($oc_out, F_GETFL, $flags);
-    # $flags |= O_NONBLOCK;
-    # fnctl($oc_out, F_SETFL, $flags);
-
-    print OC_LOG "openconnect pid $openconnect\n";
     Glib::Timeout->add(1000, \&check_openconnect_status);
   }
     
@@ -823,17 +821,17 @@ sub check_openconnect_status {
 
   if (! defined $openconnect) {
     print OC_LOG "openconnect not running\n";
-    0;
+    return 0;
   }
 
-  print OC_LOG "check_openconnect_status\n";
+  # print OC_LOG "check_openconnect_status\n";
 
   my ($eof, @lines) = nonblockGetLines($oc_out);
   
-  print scalar (@lines) . " lines\n";
+  # print scalar (@lines) . " lines\n";
   
   foreach (@lines) {
-    print OC_LOG $_;
+    print OC_LOG "$_\n";
     if (/^ESP session established with server/ ||
         /^Connected as \d+.\d+.\d+.\d+, using SSL/) {
       if (defined $indicator) {
@@ -841,7 +839,7 @@ sub check_openconnect_status {
       }
     }
   }  
-  1;
+  return 1;
 }
 
 # for debugging
@@ -884,7 +882,9 @@ sub ncsvc_disconnect {
 	}
 	print "Logging out...\n";
 	# do logout
+        $ua -> timeout (2); # we don't care about response from logout
 	$ua -> get ("https://$dhost:$dport/dana-na/auth/logout.cgi");
+        $ua -> timeout (180); # default
         if (defined $indicator) {
           $indicator->set_connected(0);
         } 
