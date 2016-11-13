@@ -25,6 +25,7 @@ use File::Copy;
 use File::Temp;
 use File::Path;
 use POSIX;
+use IPC::Open2;
 
 # UI and indicator
 use Glib;
@@ -197,6 +198,11 @@ END2
     close SCRIPT2;
     system("pkexec /bin/sh -f $workdir/set_perms");
   }
+
+  open OC_LOG, ">openconnect.log";
+  my $ofh = select OC_LOG;
+  $|=1;
+  select $ofh;
 } else {
   # we need ncsvc to be uid for all other modes
   my $is_setuid = 0;
@@ -244,6 +250,7 @@ $SIG{'INT'}  = \&INT_handler; # CTRL+C
 $SIG{'TERM'} = \&INT_handler; # Kill process
 $SIG{'HUP'} = \&INT_handler; # Terminal closed
 $SIG{'PIPE'} = \&INT_handler; # Process died
+# $SIG{'CHLD'} = 'IGNORE';
 
 # flush after every write
 $| = 1;
@@ -253,6 +260,8 @@ my $crtfile = '';
 my $fh; # should be global or file is unlinked
 my $start_t;
 my ($socket,$client_socket);
+
+my ($openconnect, $oc_in, $oc_out);
 
 if ($no_gui) {
   ncsvc_connect();
@@ -704,15 +713,36 @@ sub ncsvc_connect {
 	#  	vpn-type openconnect \
 	#  	-- \
 	#  	vpn.data "gateway=vpn.example.com,protocol=nc"
+        #
+        #  with a patch for network-manager-openconnect and adding juniper_mode=1 to vpn.data
+        #  it did work, but DNS is not right.
       
-      # should use a setuid wrapper script for openconnect
       # should fork, return pid, something like that
     if (0) {
       system("sudo openconnect --dump-http-traffic --juniper -C \"DSID=$dsid\" $dhost");
     } else {
-      open LAUNCH, "|./nc_open_conn $dhost";
-      print LAUNCH "DSID=$dsid\n";
-      close LAUNCH;
+
+      $openconnect = open2($oc_out, $oc_in, "./nc_open_conn", "$dhost");
+      # sleep(1);
+      print $oc_in "DSID=$dsid\n";
+      print OC_LOG "openconnect pid $openconnect\n";
+
+      while (1) {
+        my $a = <$oc_out>;
+        if (defined $a) {
+          print OC_LOG $a;
+          if ($a =~ /^ESP session established with server/ ||
+              $a =~ /Connected as \d+.\d+.\d+.\d+, using SSL/) {
+            if (defined $indicator) {
+              $indicator->set_connected(1);
+            }
+            return;
+          }
+        }
+      }
+      # open LAUNCH, "|./nc_open_conn $dhost";
+      # print LAUNCH "DSID=$dsid\n";
+      # close LAUNCH;
       # system("./nc_open_conn $dhost DSID=$dsid");
     }
   }
@@ -811,6 +841,9 @@ sub ncsvc_disconnect {
 	print "Logging out...\n";
 	# do logout
 	$ua -> get ("https://$dhost:$dport/dana-na/auth/logout.cgi");
+        if (defined $indicator) {
+          $indicator->set_connected(0);
+        } 
         if ($mode !~ /openconnect/) {
             print "Killing ncsvc...\n";
             # it is suid, so best is to use own api
@@ -821,6 +854,14 @@ sub ncsvc_disconnect {
                 print "restoring resolv.conf\n";
                 move("/etc/jnpr-nc-resolv.conf","/etc/resolv.conf");
             }
+        }
+        if (defined $openconnect) {
+          # above logout command breaks connection, openconnect exits.
+          close $oc_in;
+          close $oc_out;
+          waitpid $openconnect,0;
+          $openconnect = undef;
+          print OC_LOG "disconnected\n";
         }
 	# hostchecker cleanup
 	if($hostchecker) {
@@ -838,9 +879,6 @@ sub ncsvc_disconnect {
 	    print "delete jvpn.state file\n";
 	    remove("/tmp/jvpn.state");
 	}
-        if (defined $indicator) {
-          $indicator->set_connected(0);
-        } 
 }
 
 # handle ctrl+c to logout and kill ncsvc 
